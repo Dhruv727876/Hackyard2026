@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Base styles on top of Tailwind's preflight reset */
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: #f8fafc;
+  color: #0f172a;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
