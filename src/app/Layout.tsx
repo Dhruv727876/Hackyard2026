@@ -1,12 +1,27 @@
 import { NavLink, Outlet } from 'react-router-dom'
+import { repo } from '@/data'
 import { RoleToggle } from './RoleToggle'
 
 export function Layout() {
+  const handleResetDemo = async (): Promise<void> => {
+    await repo.resetToSeed()
+    window.location.reload()
+  }
+
   return (
     <div className="flex min-h-dvh flex-col bg-slate-50">
       <header className="bg-emerald-700 text-white">
         <div className="mx-auto flex w-full max-w-md flex-col gap-3 px-4 py-3">
-          <span className="text-lg font-bold tracking-tight">ScrapLoop</span>
+          <div className="flex items-center justify-between">
+            <span className="text-lg font-bold tracking-tight">ScrapLoop</span>
+            <button
+              type="button"
+              onClick={() => void handleResetDemo()}
+              className="text-xs text-gray-400 hover:text-rose-500 transition-colors"
+            >
+              Reset Demo
+            </button>
+          </div>
           <RoleToggle />
         </div>
       </header>

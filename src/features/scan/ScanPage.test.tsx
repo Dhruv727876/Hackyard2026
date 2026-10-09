@@ -72,11 +72,11 @@ describe('ScanPage', () => {
     ).toBeInTheDocument()
   })
 
-  it("ok + source 'gemini' → items render (label, material select, weight), totals card shows formatINR of valuateItems of those items, NO sample badge", async () => {
+  it("ok + source 'nvidia' → items render (label, material select, weight), totals card shows formatINR of valuateItems of those items, NO sample badge", async () => {
     mockScanScrap.mockResolvedValueOnce({
       kind: 'ok',
       result: TWO_ITEMS_RESULT,
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -113,7 +113,7 @@ describe('ScanPage', () => {
       expect(screen.getByText('Sample result')).toBeInTheDocument()
     })
     expect(
-      screen.getByText("Gemini wasn't reachable, so this demo result is shown."),
+      screen.getByText("The AI service wasn't reachable, so this demo result is shown."),
     ).toBeInTheDocument()
   })
 
@@ -132,7 +132,7 @@ describe('ScanPage', () => {
           },
         ],
       },
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -166,7 +166,7 @@ describe('ScanPage', () => {
           },
         ],
       },
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -198,7 +198,7 @@ describe('ScanPage', () => {
           { material: 'glass', label: 'Clear bottle', estKg: 1, confidence: 0.8 },
         ],
       },
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -229,7 +229,7 @@ describe('ScanPage', () => {
           },
         ],
       },
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -258,7 +258,7 @@ describe('ScanPage', () => {
         overallConfidence: 0.9,
         items: [{ material: 'paper', label: 'Scrap bundle', estKg: 1, confidence: 0.9 }],
       },
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)
@@ -326,7 +326,7 @@ describe('ScanPage', () => {
     mockScanScrap.mockResolvedValueOnce({
       kind: 'ok',
       result: TWO_ITEMS_RESULT,
-      source: 'gemini',
+      source: 'nvidia',
     })
 
     render(<ScanPage />)

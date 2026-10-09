@@ -9,7 +9,7 @@ export interface ScanResult {
   overallConfidence: number
 }
 
-export type ScanSource = 'gemini' | 'sample'
+export type ScanSource = 'nvidia' | 'sample'
 
 export type ScanRetryReason = 'unclear' | 'rate-limited'
 
@@ -67,7 +67,7 @@ function parseItem(raw: unknown): ScrapItemInput | null {
 }
 
 /**
- * The guardrail between a (future) Gemini response and the rest of the app.
+ * The guardrail between an AI response and the rest of the app.
  * Validates and sanitizes an untrusted model response: whitelists materials,
  * coerces and clamps numbers, drops (never throws on) bad items. Returns null
  * when the top-level shape is unusable — the caller treats that as failure.

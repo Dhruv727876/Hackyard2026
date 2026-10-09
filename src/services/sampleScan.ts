@@ -2,7 +2,7 @@ import { parseScanResponse } from './scanContract'
 import type { ScanResult } from './scanContract'
 
 /**
- * Cached demo fallback, used in 4b when the Gemini call fails or no API key
+ * Cached demo fallback, used when the AI scan call fails or no API key
  * is set — so a demo never white-screens. The UI must label results from this
  * source as sample data (ScanSource 'sample').
  *

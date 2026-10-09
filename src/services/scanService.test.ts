@@ -1,23 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCAN_CONFIG } from '@/config/scan'
 import { SAMPLE_SCAN_RESULT } from './sampleScan'
-import { resetScanThrottle, scanScrap } from './scanService'
-
-const { generateContentMock } = vi.hoisted(() => ({ generateContentMock: vi.fn() }))
-
-// A regular (non-arrow) function is required: scanScrap calls `new GoogleGenAI(...)`.
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(function GoogleGenAIMock() {
-    return { models: { generateContent: generateContentMock } }
-  }),
-  Type: {
-    OBJECT: 'OBJECT',
-    ARRAY: 'ARRAY',
-    STRING: 'STRING',
-    NUMBER: 'NUMBER',
-    BOOLEAN: 'BOOLEAN',
-  },
-}))
+import { extractJsonObject, resetScanThrottle, scanScrap } from './scanService'
 
 // jsdom has no canvas, so the real compressImage cannot run here.
 vi.mock('@/lib/image', () => ({
@@ -60,34 +44,113 @@ const MIXED_CONFIDENCE_JSON = JSON.stringify({
   ],
 })
 
+function makeNvidiaResponse(content: unknown, status = 200, statusText = 'OK') {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content,
+          },
+        },
+      ],
+    }),
+  }
+}
+
+const mockFetch = vi.fn()
+
 beforeEach(() => {
   resetScanThrottle()
-  generateContentMock.mockReset()
+  mockFetch.mockReset()
   vi.unstubAllEnvs()
-  vi.stubEnv('VITE_GEMINI_API_KEY', 'test-key')
+  vi.unstubAllGlobals()
+  vi.stubGlobal('fetch', mockFetch)
 })
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+})
+
+describe('extractJsonObject', () => {
+  it('extracts plain JSON', () => {
+    const input = '{"scrapDetected":true,"overallConfidence":0.8,"items":[]}'
+    expect(extractJsonObject(input)).toBe(input)
+  })
+
+  it('extracts fenced JSON', () => {
+    const input = '```json\n{"scrapDetected":true,"items":[]}\n```'
+    expect(extractJsonObject(input)).toBe('{"scrapDetected":true,"items":[]}')
+  })
+
+  it('extracts think-tagged JSON', () => {
+    const input =
+      '<think>I see some scrap\nLet me format it.</think>{"scrapDetected":true,"items":[]}'
+    expect(extractJsonObject(input)).toBe('{"scrapDetected":true,"items":[]}')
+  })
+
+  it('extracts JSON with prose before and after', () => {
+    const input = 'Here is the result:\n{"scrapDetected":true,"items":[]}\nHope this helps!'
+    expect(extractJsonObject(input)).toBe('{"scrapDetected":true,"items":[]}')
+  })
+
+  it('returns null for text with no braces', () => {
+    expect(extractJsonObject('No scrap found in this image.')).toBeNull()
+  })
+
+  it('returns null for malformed brace ordering or incomplete object', () => {
+    expect(extractJsonObject('} invalid {')).toBeNull()
+    expect(extractJsonObject('{ incomplete json')).toBeNull()
+  })
 })
 
 describe('scanScrap', () => {
-  it('returns the sample scan without calling the SDK when no API key is set', async () => {
-    vi.stubEnv('VITE_GEMINI_API_KEY', '')
-    const outcome = await scanScrap([photo()])
+  it('falls back to the sample and logs warning when proxy returns 503 (e.g. missing server key)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      mockFetch.mockResolvedValueOnce(makeNvidiaResponse(null, 503, 'Service Unavailable'))
+      const outcome = await scanScrap([photo()])
 
-    expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
-    expect(generateContentMock).not.toHaveBeenCalled()
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/scan')
+      expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
+      expect(warn).toHaveBeenCalledWith(
+        '[scrap-scan] falling back to sample data:',
+        '503 Service Unavailable',
+      )
+    } finally {
+      warn.mockRestore()
+    }
   })
 
-  it('returns parsed gemini results on a valid response', async () => {
-    generateContentMock.mockResolvedValue({ text: VALID_SCAN_JSON })
+  it('returns parsed nvidia results on a valid plain JSON response', async () => {
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(VALID_SCAN_JSON))
     const outcome = await scanScrap([photo(), photo()])
 
-    expect(generateContentMock).toHaveBeenCalledTimes(1)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const [calledUrl, calledInit] = mockFetch.mock.calls[0]
+    expect(calledUrl).toBe('/api/scan')
+    expect(calledUrl).toBe(SCAN_CONFIG.apiUrl)
+    expect(calledInit.method).toBe('POST')
+    expect(calledInit.headers).toEqual({
+      'Content-Type': 'application/json',
+    })
+    expect(calledInit.headers).not.toHaveProperty('Authorization')
+
+    const parsedBody = JSON.parse(calledInit.body)
+    expect(parsedBody.model).toBe(SCAN_CONFIG.model)
+    expect(parsedBody.stream).toBe(false)
+    expect(parsedBody.max_tokens).toBe(1024)
+    expect(parsedBody.temperature).toBe(0.2)
+    expect(parsedBody.top_p).toBe(0.95)
+
     expect(outcome).toEqual({
       kind: 'ok',
-      source: 'gemini',
+      source: 'nvidia',
       result: {
         scrapDetected: true,
         overallConfidence: 0.8,
@@ -99,12 +162,41 @@ describe('scanScrap', () => {
     })
   })
 
-  it('falls back to the sample on malformed model output', async () => {
+  it('handles markdown-fenced JSON response', async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeNvidiaResponse('```json\n' + VALID_SCAN_JSON + '\n```'),
+    )
+    const outcome = await scanScrap([photo()])
+
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.source).toBe('nvidia')
+      expect(outcome.result.items).toHaveLength(2)
+    }
+  })
+
+  it('handles <think>reasoning</think> followed by JSON', async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeNvidiaResponse(
+        '<think>The user has uploaded newspapers and cans.</think>' + VALID_SCAN_JSON,
+      ),
+    )
+    const outcome = await scanScrap([photo()])
+
+    expect(outcome.kind).toBe('ok')
+    if (outcome.kind === 'ok') {
+      expect(outcome.source).toBe('nvidia')
+      expect(outcome.result.items).toHaveLength(2)
+    }
+  })
+
+  it('falls back to the sample on invalid JSON response text', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      generateContentMock.mockResolvedValue({ text: "I can't help with that." })
+      mockFetch.mockResolvedValueOnce(makeNvidiaResponse('{broken json'))
       const outcome = await scanScrap([photo()])
 
+      expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
       expect(warn).toHaveBeenCalled()
     } finally {
@@ -112,27 +204,13 @@ describe('scanScrap', () => {
     }
   })
 
-  it('falls back to the sample when the model returns undefined text', async () => {
+  it('falls back to the sample when the model returns undefined content', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      generateContentMock.mockResolvedValue({ text: undefined })
+      mockFetch.mockResolvedValueOnce(makeNvidiaResponse(undefined))
       const outcome = await scanScrap([photo()])
 
-      expect(generateContentMock).toHaveBeenCalledTimes(1)
-      expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
-      expect(warn).toHaveBeenCalled()
-    } finally {
-      warn.mockRestore()
-    }
-  })
-
-  it('falls back to the sample on invalid JSON text', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      generateContentMock.mockResolvedValue({ text: '{broken json' })
-      const outcome = await scanScrap([photo()])
-
-      expect(generateContentMock).toHaveBeenCalledTimes(1)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
       expect(warn).toHaveBeenCalled()
     } finally {
@@ -141,28 +219,44 @@ describe('scanScrap', () => {
   })
 
   it('returns retry unclear when the model detects no scrap', async () => {
-    generateContentMock.mockResolvedValue({ text: NO_SCRAP_JSON })
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(NO_SCRAP_JSON))
     expect(await scanScrap([photo()])).toEqual({ kind: 'retry', reason: 'unclear' })
   })
 
   it('returns retry unclear when every item is below the confidence threshold', async () => {
-    generateContentMock.mockResolvedValue({ text: LOW_CONFIDENCE_JSON })
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(LOW_CONFIDENCE_JSON))
     expect(await scanScrap([photo()])).toEqual({ kind: 'retry', reason: 'unclear' })
   })
 
-  it('keeps mixed-confidence items as ok gemini results', async () => {
-    generateContentMock.mockResolvedValue({ text: MIXED_CONFIDENCE_JSON })
+  it('retains both items when one is low-confidence and one is high-confidence', async () => {
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(MIXED_CONFIDENCE_JSON))
     const outcome = await scanScrap([photo()])
 
     if (outcome.kind !== 'ok') throw new Error('Expected an ok outcome')
-    expect(outcome.source).toBe('gemini')
+    expect(outcome.source).toBe('nvidia')
     expect(outcome.result.items).toHaveLength(2)
   })
 
-  it('falls back to the sample when the SDK call rejects', async () => {
+  it('falls back to the sample when HTTP returns 401/non-2xx', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      generateContentMock.mockRejectedValue(new Error('network down'))
+      mockFetch.mockResolvedValueOnce(makeNvidiaResponse(null, 401, 'Unauthorized'))
+      const outcome = await scanScrap([photo()])
+
+      expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
+      expect(warn).toHaveBeenCalledWith(
+        '[scrap-scan] falling back to sample data:',
+        '401 Unauthorized',
+      )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('falls back to the sample when fetch rejects/network error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      mockFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
       const outcome = await scanScrap([photo()])
 
       expect(outcome).toEqual({ kind: 'ok', result: SAMPLE_SCAN_RESULT, source: 'sample' })
@@ -176,7 +270,7 @@ describe('scanScrap', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.useFakeTimers()
     try {
-      generateContentMock.mockReturnValue(new Promise(() => {})) // never resolves
+      mockFetch.mockReturnValue(new Promise(() => {})) // never resolves
       const pending = scanScrap([photo()])
       await vi.advanceTimersByTimeAsync(SCAN_CONFIG.requestTimeoutMs)
 
@@ -188,41 +282,34 @@ describe('scanScrap', () => {
     }
   })
 
-  it('rate-limits immediate repeat calls and unlocks after resetScanThrottle', async () => {
-    vi.stubEnv('VITE_GEMINI_API_KEY', '')
-    expect(await scanScrap([photo()])).toEqual({
-      kind: 'ok',
-      result: SAMPLE_SCAN_RESULT,
-      source: 'sample',
-    })
+  it('preserves throttle behavior: rate-limits immediate repeats and unlocks after resetScanThrottle', async () => {
+    mockFetch.mockResolvedValue(makeNvidiaResponse(VALID_SCAN_JSON))
+    const first = await scanScrap([photo()])
+    expect(first.kind).toBe('ok')
     expect(await scanScrap([photo()])).toEqual({ kind: 'retry', reason: 'rate-limited' })
 
     resetScanThrottle()
-    expect(await scanScrap([photo()])).toEqual({
-      kind: 'ok',
-      result: SAMPLE_SCAN_RESULT,
-      source: 'sample',
-    })
+    const third = await scanScrap([photo()])
+    expect(third.kind).toBe('ok')
   })
 
-  it('returns retry unclear for zero images without calling the SDK', async () => {
+  it('returns retry unclear for zero images without calling fetch', async () => {
     const outcome = await scanScrap([])
     expect(outcome).toEqual({ kind: 'retry', reason: 'unclear' })
-    expect(generateContentMock).not.toHaveBeenCalled()
+    expect(mockFetch).not.toHaveBeenCalled()
   })
 
-  it('uses VITE_GEMINI_MODEL when set and SCAN_CONFIG.model otherwise', async () => {
-    generateContentMock.mockResolvedValue({ text: VALID_SCAN_JSON })
+  it('uses VITE_NVIDIA_MODEL override when set and SCAN_CONFIG.model by default', async () => {
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(VALID_SCAN_JSON))
     await scanScrap([photo()])
-    expect(generateContentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: SCAN_CONFIG.model }),
-    )
+    const firstCallBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(firstCallBody.model).toBe(SCAN_CONFIG.model)
 
     resetScanThrottle()
-    vi.stubEnv('VITE_GEMINI_MODEL', 'gemini-test-model')
+    vi.stubEnv('VITE_NVIDIA_MODEL', 'custom/nemotron-model')
+    mockFetch.mockResolvedValueOnce(makeNvidiaResponse(VALID_SCAN_JSON))
     await scanScrap([photo()])
-    expect(generateContentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gemini-test-model' }),
-    )
+    const secondCallBody = JSON.parse(mockFetch.mock.calls[1][1].body)
+    expect(secondCallBody.model).toBe('custom/nemotron-model')
   })
 })

@@ -70,7 +70,7 @@ export async function compressImage(
   }
 }
 
-/** Blob → bare base64 (no data: prefix) for Gemini inlineData format. */
+/** Blob → bare base64 (no data: prefix). */
 export function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()

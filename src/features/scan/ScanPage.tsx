@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router-dom'
 import { SCAN_CONFIG } from '@/config/scan'
 import type { ScrapItemInput } from '@/domain/types'
 import { validateImageFile } from '@/lib/image'
@@ -10,6 +11,9 @@ import { ScanResults } from './ScanResults'
 export type ScanPhase = 'pick' | 'scanning' | 'results'
 
 export default function ScanPage(): React.JSX.Element {
+  const inRouter = useInRouterContext()
+  const getNav = useNavigate
+  const navigate = inRouter ? getNav() : () => {}
   const [files, setFiles] = useState<File[]>([])
   const [fileErrors, setFileErrors] = useState<{ name: string; reason: string }[]>([])
   const [phase, setPhase] = useState<ScanPhase>('pick')
@@ -173,7 +177,7 @@ export default function ScanPage(): React.JSX.Element {
                 Sample result
               </span>
               <span className="text-slate-600">
-                Gemini wasn't reachable, so this demo result is shown.
+                The AI service wasn't reachable, so this demo result is shown.
               </span>
             </div>
           )}
@@ -192,6 +196,13 @@ export default function ScanPage(): React.JSX.Element {
           ) : (
             <>
               <ScanResults items={items} onChange={setItems} />
+              <button
+                type="button"
+                onClick={() => navigate('/pickups/new', { state: { items } })}
+                className="min-h-[44px] w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700"
+              >
+                Request pickup →
+              </button>
               <div className="pt-2">
                 <button
                   type="button"
